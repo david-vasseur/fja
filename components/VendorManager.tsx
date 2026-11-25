@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useForm } from "@tanstack/react-form";
 import {
   Plus,
@@ -14,6 +15,7 @@ import {
   X,
   Briefcase,
   ShieldCheck,
+  AlertCircle,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store/useAppStore";
 import {
@@ -23,6 +25,14 @@ import {
   calculerLigne,
   calculerNbJours,
 } from "@/types/operation";
+import { getClientFingerprint } from "@/lib/fingerPrintClient";
+import {
+  VendeurApiItem,
+  createVendeurAction,
+  deleteVendeurAction,
+  getVendeursAction,
+  updateVendeurAction,
+} from "@/lib/actions/vendeurs.action";
 
 const fmtEur = (n: number) =>
   new Intl.NumberFormat("fr-FR", {
@@ -38,19 +48,44 @@ const fmtDateFR = (iso?: string) => {
 };
 
 export default function VendeurManager() {
-  const {
-    vendeurs,
-    operations,
-    addVendeur,
-    updateVendeur,
-    deleteVendeur,
-  } = useAppStore();
+  const router = useRouter();
+  const { vendeurs, operations, logout } = useAppStore();
 
   const [isFormOpen, setIsFormOpen] = useState(false);
-  const [editingVendeur, setEditingVendeur] = useState<Vendeur | null>(null);
+  const [editingVendeur, setEditingVendeur] = useState<VendeurApiItem | null>(
+    null
+  );
   const [selectedVendeurId, setSelectedVendeurId] = useState<string | null>(
     null
   );
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // Chargement initial des vendeurs depuis PostgreSQL
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadVendeurs = async () => {
+      const fp = await getClientFingerprint();
+      const res = await getVendeursAction(fp);
+      if (cancelled) return;
+
+      if (!res.success) {
+        if (res.unauthorized) {
+          logout();
+          router.replace("/");
+        }
+        return;
+      }
+
+      useAppStore.setState({ vendeurs: res.data });
+    };
+
+    loadVendeurs();
+    return () => {
+      cancelled = true;
+    };
+  }, [logout, router]);
 
   const form = useForm({
     defaultValues: {
@@ -77,49 +112,101 @@ export default function VendeurManager() {
       notes: "",
     },
     onSubmit: async ({ value }) => {
-      const payload: Omit<Vendeur, "id"> = {
-        civilite: value.civilite,
-        nom: value.nom.trim().toUpperCase(),
-        prenom: value.prenom.trim(),
-        dateNaissance: value.dateNaissance,
-        lieuNaissance: value.lieuNaissance.trim(),
-        nationalite: value.nationalite.trim(),
-        numeroSecu: value.numeroSecu.replace(/\s+/g, ""),
-        adresse: value.adresse.trim(),
-        codePostal: value.codePostal.trim(),
-        ville: value.ville.trim(),
-        telephone: value.telephone.trim(),
-        email: value.email.trim().toLowerCase(),
-        iban: value.iban.trim().toUpperCase(),
-        typeContrat: value.typeContrat,
-        qualification: value.qualification.trim(),
-        coefficientConvention: value.coefficientConvention.trim(),
-        periodeEssai: value.periodeEssai.trim(),
-        baseHoraire: Number(value.baseHoraire) || 35,
-        salaireBrutMensuel: Number(value.salaireBrutMensuel) || 0,
-        tauxHoraireBrut: Number(value.tauxHoraireBrut) || 0,
-        notes: value.notes.trim(),
-      };
+      setErrorMsg("");
+      setIsSaving(true);
 
-      if (editingVendeur) {
-        updateVendeur(editingVendeur.id, payload);
-      } else {
-        addVendeur(payload);
+      try {
+        const cleanSecu = value.numeroSecu.replace(/\s+/g, "");
+        const isMaskedSecu = cleanSecu.includes("•");
+
+        const payload: Omit<Vendeur, "id"> = {
+          civilite: value.civilite,
+          nom: value.nom.trim().toUpperCase(),
+          prenom: value.prenom.trim(),
+          dateNaissance: value.dateNaissance,
+          lieuNaissance: value.lieuNaissance.trim(),
+          nationalite: value.nationalite.trim(),
+          // En édition, si le champ contient toujours le masque "•••• 1234", on n'écrase pas le NIR chiffré en BDD
+          numeroSecu: isMaskedSecu ? "" : cleanSecu,
+          adresse: value.adresse.trim(),
+          codePostal: value.codePostal.trim(),
+          ville: value.ville.trim(),
+          telephone: value.telephone.trim(),
+          email: value.email.trim().toLowerCase(),
+          iban: value.iban.trim().toUpperCase(),
+          typeContrat: value.typeContrat,
+          qualification: value.qualification.trim(),
+          coefficientConvention: value.coefficientConvention.trim(),
+          periodeEssai: value.periodeEssai.trim(),
+          baseHoraire: Number(value.baseHoraire) || 35,
+          salaireBrutMensuel: Number(value.salaireBrutMensuel) || 0,
+          tauxHoraireBrut: Number(value.tauxHoraireBrut) || 0,
+          notes: value.notes.trim(),
+        };
+
+        const fp = await getClientFingerprint();
+
+        if (editingVendeur) {
+          const updatePayload: Partial<Omit<Vendeur, "id">> = { ...payload };
+          if (isMaskedSecu) {
+            delete updatePayload.numeroSecu;
+          }
+
+          const res = await updateVendeurAction(
+            editingVendeur.id,
+            updatePayload,
+            fp
+          );
+          if (!res.success) {
+            if (res.unauthorized) {
+              logout();
+              router.replace("/");
+              return;
+            }
+            setErrorMsg(res.error);
+            return;
+          }
+
+          useAppStore.setState((state) => ({
+            vendeurs: state.vendeurs.map((v) =>
+              v.id === editingVendeur.id ? res.data : v
+            ),
+          }));
+        } else {
+          const res = await createVendeurAction(payload, fp);
+          if (!res.success) {
+            if (res.unauthorized) {
+              logout();
+              router.replace("/");
+              return;
+            }
+            setErrorMsg(res.error);
+            return;
+          }
+
+          useAppStore.setState((state) => ({
+            vendeurs: [...state.vendeurs, res.data],
+          }));
+        }
+
+        setIsFormOpen(false);
+        setEditingVendeur(null);
+        form.reset();
+      } finally {
+        setIsSaving(false);
       }
-
-      setIsFormOpen(false);
-      setEditingVendeur(null);
-      form.reset();
     },
   });
 
   const openCreateModal = () => {
+    setErrorMsg("");
     setEditingVendeur(null);
     form.reset();
     setIsFormOpen(true);
   };
 
-  const openEditModal = (v: Vendeur) => {
+  const openEditModal = (v: VendeurApiItem) => {
+    setErrorMsg("");
     setEditingVendeur(v);
     form.setFieldValue("civilite", v.civilite ?? "M.");
     form.setFieldValue("nom", v.nom ?? "");
@@ -151,20 +238,48 @@ export default function VendeurManager() {
     setIsFormOpen(true);
   };
 
-  const selectedVendeur = vendeurs.find((v) => v.id === selectedVendeurId);
+  const handleDeleteVendeur = async (vendeur: VendeurApiItem) => {
+    if (
+      !confirm(
+        `Supprimer la fiche de ${vendeur.prenom ?? ""} ${vendeur.nom} ?`
+      )
+    ) {
+      return;
+    }
 
-  const isContratReady = (v: Vendeur) =>
+    const fp = await getClientFingerprint();
+    const res = await deleteVendeurAction(vendeur.id, fp);
+
+    if (!res.success) {
+      if (res.unauthorized) {
+        logout();
+        router.replace("/");
+        return;
+      }
+      alert(res.error);
+      return;
+    }
+
+    useAppStore.setState((state) => ({
+      vendeurs: state.vendeurs.filter((v) => v.id !== vendeur.id),
+    }));
+  };
+
+  const selectedVendeur = vendeurs.find((v) => v.id === selectedVendeurId) as
+    | VendeurApiItem
+    | undefined;
+
+  const isContratReady = (v: VendeurApiItem) =>
     Boolean(
       v.prenom &&
         v.dateNaissance &&
         v.lieuNaissance &&
-        v.numeroSecu &&
+        (v.numeroSecu || v.hasNir) &&
         v.adresse &&
         v.codePostal &&
         v.ville
     );
 
-  // Calcule le bilan d'un vendeur à travers toutes ses affectations sur les opérations
   const getBilanVendeur = (vendeurId: string) => {
     let totalCAHT = 0;
     let totalCommissions = 0;
@@ -259,7 +374,7 @@ export default function VendeurManager() {
 
       {/* Grille des fiches vendeurs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {vendeurs.map((vendeur) => {
+        {(vendeurs as VendeurApiItem[]).map((vendeur) => {
           const bilan = getBilanVendeur(vendeur.id);
           const complet = isContratReady(vendeur);
 
@@ -302,13 +417,7 @@ export default function VendeurManager() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (
-                          confirm(
-                            `Supprimer la fiche de ${vendeur.prenom ?? ""} ${vendeur.nom} ?`
-                          )
-                        ) {
-                          deleteVendeur(vendeur.id);
-                        }
+                        handleDeleteVendeur(vendeur);
                       }}
                       title="Supprimer"
                       className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
@@ -388,6 +497,13 @@ export default function VendeurManager() {
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {errorMsg && (
+              <div className="flex items-center gap-2 p-3 rounded-xl bg-red-950/60 border border-red-500/30 text-xs text-red-300">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
 
             <form
               onSubmit={(e) => {
@@ -746,17 +862,21 @@ export default function VendeurManager() {
                 <button
                   type="button"
                   onClick={() => setIsFormOpen(false)}
+                  disabled={isSaving}
                   className="px-4 py-2 rounded-xl border border-slate-700 text-slate-300 text-xs cursor-pointer"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer"
+                  disabled={isSaving}
+                  className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs disabled:opacity-60 cursor-pointer"
                 >
-                  {editingVendeur
-                    ? "Enregistrer les modifications"
-                    : "Créer la fiche vendeur"}
+                  {isSaving
+                    ? "Enregistrement..."
+                    : editingVendeur
+                      ? "Enregistrer les modifications"
+                      : "Créer la fiche vendeur"}
                 </button>
               </div>
             </form>

@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import OperationBoard from "../components/OperationBoard";
+import OperationBoard from "../../components/OperationBoard";
 
 async function OperationContent({
   params,

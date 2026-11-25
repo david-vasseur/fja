@@ -18,6 +18,7 @@ import {
   FileSignature,
   UserPlus,
   Pencil,
+  AlertCircle,
 } from "lucide-react";
 import {
   AffectationVendeur,
@@ -25,8 +26,20 @@ import {
   RoleMission,
 } from "@/types/operation";
 import { useAppStore } from "@/lib/store/useAppStore";
-import VendeurManager from "../components/VendorManager";
-import ContractGeneratorModal from "../components/ContractGeneratorModal";
+import VendeurManager from "../../components/VendorManager";
+import ContractGeneratorModal from "../../components/ContractGeneratorModal";
+import { getClientFingerprint } from "@/lib/fingerPrintClient";
+import {
+  logoutAction,
+  verifySessionAction,
+} from "@/lib/actions/auth.action";
+import { getVendeursAction } from "@/lib/actions/vendeurs.action";
+import {
+  createOperationAction,
+  deleteOperationAction,
+  getOperationsAction,
+  updateOperationAction,
+} from "@/lib/actions/operations.action";
 
 const fmtEur = (n: number) =>
   new Intl.NumberFormat("fr-FR", {
@@ -50,17 +63,9 @@ function slugifyOperation(magasin: string, ville: string, dateDebut: string) {
 
 export default function AdminDashboardPage() {
   const router = useRouter();
-  const {
-    auth,
-    vendeurs,
-    operations,
-    logout,
-    addOperation,
-    updateOperation,
-    deleteOperation,
-  } = useAppStore();
+  const { auth, vendeurs, operations, loginAdmin, logout } = useAppStore();
 
-  const [mounted, setMounted] = useState(false);
+  const [verified, setVerified] = useState(false);
   const [activeTab, setActiveTab] = useState<"operations" | "vendeurs">(
     "operations"
   );
@@ -70,16 +75,8 @@ export default function AdminDashboardPage() {
   >(null);
   const [contractOperation, setContractOperation] =
     useState<OperationData | null>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (mounted && auth.role !== "admin") {
-      router.push("/");
-    }
-  }, [mounted, auth.role, router]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [modalError, setModalError] = useState("");
 
   const operationForm = useForm({
     defaultValues: {
@@ -94,53 +91,157 @@ export default function AdminDashboardPage() {
       affectations: [] as AffectationVendeur[],
     },
     onSubmit: async ({ value }) => {
-      const generatedLogin =
-        value.loginId.trim() ||
-        `mag-${value.magasin.toLowerCase().replace(/[^a-z0-9]/g, "")}-${value.ville.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+      setModalError("");
+      setIsSaving(true);
 
-      if (modalOperation && modalOperation !== "new") {
-        // --- MODE ÉDITION ---
-        updateOperation(modalOperation.slug, {
-          nomOperation: `${value.magasin} ${value.ville}`.trim(),
-          magasin: value.magasin.trim(),
-          ville: value.ville.trim(),
-          loginId: generatedLogin,
-          loginPassword: value.loginPassword || "admin123",
-          dateDebut: value.dateDebut,
-          dateFin: value.dateFin,
-          coefOperation: Number(value.coefOperation) || 2.5,
-          tva: Number(value.tva) || 1.2,
-          affectations: value.affectations,
-        });
-      } else {
-        // --- MODE CRÉATION ---
-        const slug = slugifyOperation(
-          value.magasin,
-          value.ville,
-          value.dateDebut
-        );
+      try {
+        const generatedLogin =
+          value.loginId.trim() ||
+          `mag-${value.magasin.toLowerCase().replace(/[^a-z0-9]/g, "")}-${value.ville.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
 
-        addOperation({
-          slug,
-          nomOperation: `${value.magasin} ${value.ville}`.trim(),
-          magasin: value.magasin.trim(),
-          ville: value.ville.trim(),
-          loginId: generatedLogin,
-          loginPassword: value.loginPassword || "admin123",
-          dateDebut: value.dateDebut,
-          dateFin: value.dateFin,
-          coefOperation: Number(value.coefOperation) || 2.5,
-          tva: Number(value.tva) || 1.2,
-          affectations: value.affectations,
-        });
+        const fp = await getClientFingerprint();
+
+        if (modalOperation && modalOperation !== "new") {
+          // --- MODE ÉDITION ---
+          const res = await updateOperationAction(
+            modalOperation.slug,
+            {
+              nomOperation: `${value.magasin} ${value.ville}`.trim(),
+              magasin: value.magasin.trim(),
+              ville: value.ville.trim(),
+              loginId: generatedLogin,
+              loginPassword: value.loginPassword || "admin123",
+              dateDebut: value.dateDebut,
+              dateFin: value.dateFin,
+              coefOperation: Number(value.coefOperation) || 2.5,
+              tva: Number(value.tva) || 1.2,
+              affectations: value.affectations,
+            },
+            fp
+          );
+
+          if (!res.success) {
+            if (res.unauthorized) {
+              logout();
+              router.replace("/");
+              return;
+            }
+            setModalError(res.error);
+            return;
+          }
+
+          useAppStore.setState((state) => ({
+            operations: state.operations.map((op) =>
+              op.slug === modalOperation.slug ? res.data : op
+            ),
+          }));
+        } else {
+          // --- MODE CRÉATION ---
+          const slug = slugifyOperation(
+            value.magasin,
+            value.ville,
+            value.dateDebut
+          );
+
+          const res = await createOperationAction(
+            {
+              slug,
+              nomOperation: `${value.magasin} ${value.ville}`.trim(),
+              magasin: value.magasin.trim(),
+              ville: value.ville.trim(),
+              loginId: generatedLogin,
+              loginPassword: value.loginPassword || "admin123",
+              dateDebut: value.dateDebut,
+              dateFin: value.dateFin,
+              coefOperation: Number(value.coefOperation) || 2.5,
+              tva: Number(value.tva) || 1.2,
+              affectations: value.affectations,
+            },
+            fp
+          );
+
+          if (!res.success) {
+            if (res.unauthorized) {
+              logout();
+              router.replace("/");
+              return;
+            }
+            setModalError(res.error);
+            return;
+          }
+
+          useAppStore.setState((state) => ({
+            operations: [res.data, ...state.operations],
+          }));
+        }
+
+        operationForm.reset();
+        setModalOperation(null);
+      } finally {
+        setIsSaving(false);
       }
-
-      operationForm.reset();
-      setModalOperation(null);
     },
   });
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const initDashboard = async () => {
+      try {
+        const fp = await getClientFingerprint();
+        const session = await verifySessionAction(fp);
+
+        if (cancelled) return;
+
+        if (!session || session.role !== "admin") {
+          logout();
+          router.replace("/");
+          return;
+        }
+
+        if (auth.role !== "admin") {
+          loginAdmin(auth.email || "admin@fja-conseils.fr");
+        }
+
+        // Charge opérations et vendeurs depuis PostgreSQL
+        const [opsRes, vendeursRes] = await Promise.all([
+          getOperationsAction(fp),
+          getVendeursAction(fp),
+        ]);
+
+        if (cancelled) return;
+
+        if (
+          (!opsRes.success && opsRes.unauthorized) ||
+          (!vendeursRes.success && vendeursRes.unauthorized)
+        ) {
+          logout();
+          router.replace("/");
+          return;
+        }
+
+        useAppStore.setState({
+          ...(opsRes.success ? { operations: opsRes.data } : {}),
+          ...(vendeursRes.success ? { vendeurs: vendeursRes.data } : {}),
+        });
+
+        setVerified(true);
+      } catch {
+        if (!cancelled) {
+          logout();
+          router.replace("/");
+        }
+      }
+    };
+
+    initDashboard();
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.email, auth.role, loginAdmin, logout, router]);
+
   const openCreateModal = () => {
+    setModalError("");
     operationForm.reset();
     operationForm.setFieldValue("magasin", "");
     operationForm.setFieldValue("ville", "");
@@ -155,6 +256,7 @@ export default function AdminDashboardPage() {
   };
 
   const openEditModal = (op: OperationData) => {
+    setModalError("");
     operationForm.reset();
     operationForm.setFieldValue("magasin", op.magasin ?? "");
     operationForm.setFieldValue("ville", op.ville ?? "");
@@ -171,7 +273,38 @@ export default function AdminDashboardPage() {
     setModalOperation(op);
   };
 
-  if (!mounted || auth.role !== "admin") return null;
+  const handleDeleteOperation = async (op: OperationData) => {
+    if (!confirm(`Supprimer l'opération ${op.nomOperation} ?`)) return;
+
+    const fp = await getClientFingerprint();
+    const res = await deleteOperationAction(op.id, fp);
+
+    if (!res.success) {
+      if (res.unauthorized) {
+        logout();
+        router.replace("/");
+        return;
+      }
+      alert(res.error);
+      return;
+    }
+
+    useAppStore.setState((state) => ({
+      operations: state.operations.filter((item) => item.id !== op.id),
+    }));
+  };
+
+  const handleLogout = async () => {
+    try {
+      const fp = await getClientFingerprint();
+      await logoutAction(fp);
+    } finally {
+      logout();
+      router.replace("/");
+    }
+  };
+
+  if (!verified) return null;
 
   const isEditing = modalOperation !== null && modalOperation !== "new";
 
@@ -204,10 +337,7 @@ export default function AdminDashboardPage() {
               {auth.email}
             </span>
             <button
-              onClick={() => {
-                logout();
-                router.push("/");
-              }}
+              onClick={handleLogout}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-red-950/70 border border-slate-700 text-xs text-slate-300 hover:text-red-300 transition cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
@@ -299,15 +429,7 @@ export default function AdminDashboardPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (
-                              confirm(
-                                `Supprimer l'opération ${op.nomOperation} ?`
-                              )
-                            ) {
-                              deleteOperation(op.id);
-                            }
-                          }}
+                          onClick={() => handleDeleteOperation(op)}
                           className="text-slate-600 hover:text-red-400 p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer"
                           title="Supprimer l'opération"
                         >
@@ -464,6 +586,13 @@ export default function AdminDashboardPage() {
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {modalError && (
+              <div className="flex items-center gap-2 p-3 rounded-xl bg-red-950/60 border border-red-500/30 text-xs text-red-300">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{modalError}</span>
+              </div>
+            )}
 
             <form
               onSubmit={(e) => {
@@ -813,17 +942,21 @@ export default function AdminDashboardPage() {
                 <button
                   type="button"
                   onClick={() => setModalOperation(null)}
+                  disabled={isSaving}
                   className="px-4 py-2 rounded-xl border border-slate-700 text-slate-300 text-xs cursor-pointer"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer"
+                  disabled={isSaving}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs disabled:opacity-60 cursor-pointer"
                 >
-                  {isEditing
-                    ? "Enregistrer les modifications"
-                    : "Créer l'opération"}
+                  {isSaving
+                    ? "Enregistrement..."
+                    : isEditing
+                      ? "Enregistrer les modifications"
+                      : "Créer l'opération"}
                 </button>
               </div>
             </form>

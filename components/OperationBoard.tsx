@@ -25,7 +25,9 @@ import {
   Check,
 } from "lucide-react";
 import {
+  AffectationVendeur,
   ModePaiement,
+  OperationData,
   RoleMission,
   StatutCredit,
   Vente,
@@ -33,6 +35,19 @@ import {
   calculerNbJours,
 } from "@/types/operation";
 import { useAppStore } from "@/lib/store/useAppStore";
+import { getClientFingerprint } from "@/lib/fingerPrintClient";
+import {
+  logoutAction,
+  verifySessionAction,
+} from "@/lib/actions/auth.action";
+import { getVendeursAction } from "@/lib/actions/vendeurs.action";
+import {
+  addVenteAction,
+  deleteVenteAction,
+  getOperationBySlugAction,
+  updateOperationAction,
+  updateVenteAction,
+} from "@/lib/actions/operations.action";
 
 const fmtEur = (n: number) =>
   new Intl.NumberFormat("fr-FR", {
@@ -58,17 +73,12 @@ export default function OperationBoard({ slug }: { slug: string }) {
     auth,
     vendeurs: allVendeurs,
     operations,
-    updateOperation,
-    addAffectation,
-    updateAffectation,
-    deleteAffectation,
-    addVente,
-    updateVente,
-    deleteVente,
+    loginAdmin,
+    loginOperation,
     logout,
   } = useAppStore();
 
-  const [mounted, setMounted] = useState(false);
+  const [verified, setVerified] = useState(false);
   const [showVendeurs, setShowVendeurs] = useState(true);
   const [nouveauVendeurPied, setNouveauVendeurPied] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -93,23 +103,103 @@ export default function OperationBoard({ slug }: { slug: string }) {
     observations: "Contremarque",
   });
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
   const isAdmin = auth.role === "admin";
   const data = operations.find((op) => op.slug === slug);
 
-  useEffect(() => {
-    if (!mounted) return;
-    const autorise =
-      auth.role === "admin" ||
-      (auth.role === "operation" && auth.operationSlug === slug);
+  // Helper pour mettre à jour l'opération courante dans le store Zustand
+  const setCurrentOperation = (updater: (op: OperationData) => OperationData) => {
+    useAppStore.setState((state) => ({
+      operations: state.operations.map((op) =>
+        op.slug === slug ? updater(op) : op
+      ),
+    }));
+  };
 
-    if (!autorise) {
-      router.push("/");
-    }
-  }, [mounted, auth, slug, router]);
+  // Vérification fingerprint + chargement depuis PostgreSQL
+  useEffect(() => {
+    let cancelled = false;
+
+    const initBoard = async () => {
+      try {
+        const fp = await getClientFingerprint();
+        const session = await verifySessionAction(fp);
+
+        if (cancelled) return;
+
+        const autorise =
+          session &&
+          (session.role === "admin" ||
+            (session.role === "operation" && session.operationSlug === slug));
+
+        if (!autorise) {
+          logout();
+          router.replace("/");
+          return;
+        }
+
+        if (session.role === "admin" && auth.role !== "admin") {
+          loginAdmin(auth.email || "admin@fja-conseils.fr");
+        } else if (
+          session.role === "operation" &&
+          auth.operationSlug !== slug
+        ) {
+          loginOperation(auth.email || slug, slug);
+        }
+
+        const [opRes, vendeursRes] = await Promise.all([
+          getOperationBySlugAction(slug, fp),
+          session.role === "admin"
+            ? getVendeursAction(fp)
+            : Promise.resolve(null),
+        ]);
+
+        if (cancelled) return;
+
+        if (!opRes.success) {
+          if (opRes.unauthorized) {
+            logout();
+            router.replace("/");
+          }
+          return;
+        }
+
+        useAppStore.setState((state) => {
+          const exists = state.operations.some((o) => o.slug === slug);
+          const nextOperations = exists
+            ? state.operations.map((o) => (o.slug === slug ? opRes.data : o))
+            : [...state.operations, opRes.data];
+
+          return {
+            operations: nextOperations,
+            ...(vendeursRes && vendeursRes.success
+              ? { vendeurs: vendeursRes.data }
+              : {}),
+          };
+        });
+
+        setVerified(true);
+      } catch {
+        if (!cancelled) {
+          logout();
+          router.replace("/");
+        }
+      }
+    };
+
+    initBoard();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    auth.email,
+    auth.operationSlug,
+    auth.role,
+    loginAdmin,
+    loginOperation,
+    logout,
+    router,
+    slug,
+  ]);
 
   // --- Liste unifiée des intervenants pour les <select> Vendeur & Finisseur ---
   const optionsIntervenants = useMemo(() => {
@@ -119,7 +209,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
 
     const fjaOptions = affs.map((a) => {
       const v = allVendeurs.find((x) => x.id === a.vendeurId);
-      const label = v ? (v.prenom ? `${v.prenom}` : v.nom) : "Inconnu";
+      const label = v ? (v.prenom ? `${v.prenom}` : v.nom) : "Équipe FJA";
       return {
         value: a.vendeurId,
         label,
@@ -246,10 +336,31 @@ export default function OperationBoard({ slug }: { slug: string }) {
     };
   }, [data]);
 
-  if (!mounted || !data) return null;
+  if (!verified || !data) return null;
 
   const affectations = data.affectations ?? [];
   const vendeursEnPied = data.vendeursEnPied ?? [];
+
+  // --- Helper générique PATCH opération en BDD ---
+  const persistOperationPatch = async (patch: Partial<OperationData>) => {
+    // Mise à jour optimiste immédiate
+    setCurrentOperation((op) => ({ ...op, ...patch }));
+
+    const fp = await getClientFingerprint();
+    const res = await updateOperationAction(slug, patch, fp);
+
+    if (!res.success) {
+      if (res.unauthorized) {
+        logout();
+        router.replace("/");
+        return;
+      }
+      alert(res.error);
+      return;
+    }
+
+    setCurrentOperation(() => res.data);
+  };
 
   // --- Ouverture / Sauvegarde Modale Vente ---
   const openNewVenteModal = () => {
@@ -257,7 +368,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
       affectations.find((a) => a.role === "Vendeur")?.vendeurId ?? "";
     const defaultFinish =
       affectations.find(
-        (a) => a.role === "Finisseur" || (a.role as string) === "Finisseur"
+        (a) => a.role === "Finisseur" || (a.role as string) === "Finish"
       )?.vendeurId ?? "";
 
     const today = new Date().toISOString().slice(0, 10);
@@ -292,7 +403,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
     setVenteModalMode(id);
   };
 
-  const handleSaveVenteModal = (e: React.FormEvent) => {
+  const handleSaveVenteModal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!venteModalMode) return;
 
@@ -302,12 +413,83 @@ export default function OperationBoard({ slug }: { slug: string }) {
       modele: venteForm.modele.trim().toUpperCase(),
     };
 
+    const fp = await getClientFingerprint();
+
     if (venteModalMode === "new") {
-      addVente(slug, payload);
+      const res = await addVenteAction(slug, payload, fp);
+      if (!res.success) {
+        if (res.unauthorized) {
+          logout();
+          router.replace("/");
+          return;
+        }
+        alert(res.error);
+        return;
+      }
+      setCurrentOperation((op) => ({
+        ...op,
+        ventes: [...op.ventes, res.data],
+      }));
     } else {
-      updateVente(slug, venteModalMode, payload);
+      const res = await updateVenteAction(slug, venteModalMode, payload, fp);
+      if (!res.success) {
+        if (res.unauthorized) {
+          logout();
+          router.replace("/");
+          return;
+        }
+        alert(res.error);
+        return;
+      }
+      setCurrentOperation((op) => ({
+        ...op,
+        ventes: op.ventes.map((v) =>
+          v.id === venteModalMode ? res.data : v
+        ),
+      }));
     }
+
     setVenteModalMode(null);
+  };
+
+  // Mise à jour inline d'une vente dans le tableau desktop
+  const handleInlineUpdateVente = async (
+    venteId: string,
+    patch: Partial<Vente>
+  ) => {
+    setCurrentOperation((op) => ({
+      ...op,
+      ventes: op.ventes.map((v) =>
+        v.id === venteId ? { ...v, ...patch } : v
+      ),
+    }));
+
+    const fp = await getClientFingerprint();
+    const res = await updateVenteAction(slug, venteId, patch, fp);
+    if (!res.success && res.unauthorized) {
+      logout();
+      router.replace("/");
+    }
+  };
+
+  const handleDeleteVente = async (venteId: string) => {
+    const fp = await getClientFingerprint();
+    const res = await deleteVenteAction(slug, venteId, fp);
+
+    if (!res.success) {
+      if (res.unauthorized) {
+        logout();
+        router.replace("/");
+        return;
+      }
+      alert(res.error);
+      return;
+    }
+
+    setCurrentOperation((op) => ({
+      ...op,
+      ventes: op.ventes.filter((v) => v.id !== venteId),
+    }));
   };
 
   // Aperçu live des calculs dans la modale
@@ -317,8 +499,8 @@ export default function OperationBoard({ slug }: { slug: string }) {
     data.tva
   );
 
-  // --- Gestion des vendeurs en pied (accessible magasin + admin) ---
-  const handleAddVendeurPied = (e: React.FormEvent) => {
+  // --- Gestion des vendeurs en pied (persistée en BDD) ---
+  const handleAddVendeurPied = async (e: React.FormEvent) => {
     e.preventDefault();
     const clean = nouveauVendeurPied.trim();
     if (!clean) return;
@@ -331,27 +513,49 @@ export default function OperationBoard({ slug }: { slug: string }) {
       setNouveauVendeurPied("");
       return;
     }
-    updateOperation(slug, {
+    setNouveauVendeurPied("");
+    await persistOperationPatch({
       vendeursEnPied: [...vendeursEnPied, formatted],
     });
-    setNouveauVendeurPied("");
   };
 
-  const handleRemoveVendeurPied = (nom: string) => {
-    updateOperation(slug, {
+  const handleRemoveVendeurPied = async (nom: string) => {
+    await persistOperationPatch({
       vendeursEnPied: vendeursEnPied.filter((v) => v !== nom),
     });
   };
 
-  const handleAddAffectation = () => {
+  // --- Gestion des affectations FJA (Admin uniquement, persistée en BDD) ---
+  const handleAddAffectation = async () => {
     if (allVendeurs.length === 0) return;
-    addAffectation(slug, {
+    const newAff: AffectationVendeur = {
+      id: crypto.randomUUID(),
       vendeurId: allVendeurs[0].id,
       role: "Vendeur",
       dateDebut: data.dateDebut,
       dateFin: data.dateFin,
       fraisJournalier: 80,
       commission: 5,
+    };
+    await persistOperationPatch({
+      affectations: [...affectations, newAff],
+    });
+  };
+
+  const handleUpdateAffectation = async (
+    affId: string,
+    patch: Partial<AffectationVendeur>
+  ) => {
+    await persistOperationPatch({
+      affectations: affectations.map((a) =>
+        a.id === affId ? { ...a, ...patch } : a
+      ),
+    });
+  };
+
+  const handleDeleteAffectation = async (affId: string) => {
+    await persistOperationPatch({
+      affectations: affectations.filter((a) => a.id !== affId),
     });
   };
 
@@ -360,6 +564,16 @@ export default function OperationBoard({ slug }: { slug: string }) {
     if (id.startsWith(PIED_PREFIX)) return id.slice(PIED_PREFIX.length);
     const v = allVendeurs.find((x) => x.id === id);
     return v ? v.prenom || v.nom : "";
+  };
+
+  const handleLogout = async () => {
+    try {
+      const fp = await getClientFingerprint();
+      await logoutAction(fp);
+    } finally {
+      logout();
+      router.replace("/");
+    }
   };
 
   // --- Export / Import ---
@@ -379,28 +593,25 @@ export default function OperationBoard({ slug }: { slug: string }) {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
       try {
         const parsed = JSON.parse(ev.target?.result as string);
-        if (parsed.ventes) {
-          updateOperation(slug, {
-            nomOperation: isAdmin
-              ? (parsed.nomOperation ?? data.nomOperation)
-              : data.nomOperation,
-            dateDebut: isAdmin
-              ? (parsed.dateDebut ?? data.dateDebut)
-              : data.dateDebut,
-            dateFin: isAdmin
-              ? (parsed.dateFin ?? data.dateFin)
-              : data.dateFin,
-            coefOperation: isAdmin
-              ? (parsed.coefOperation ?? data.coefOperation)
-              : data.coefOperation,
-            affectations: isAdmin
-              ? (parsed.affectations ?? data.affectations)
-              : data.affectations,
-            vendeursEnPied: parsed.vendeursEnPied ?? data.vendeursEnPied,
-            ventes: parsed.ventes,
+        if (parsed.vendeursEnPied) {
+          await persistOperationPatch({
+            ...(isAdmin && parsed.nomOperation
+              ? { nomOperation: parsed.nomOperation }
+              : {}),
+            ...(isAdmin && parsed.dateDebut
+              ? { dateDebut: parsed.dateDebut }
+              : {}),
+            ...(isAdmin && parsed.dateFin ? { dateFin: parsed.dateFin } : {}),
+            ...(isAdmin && parsed.coefOperation
+              ? { coefOperation: parsed.coefOperation }
+              : {}),
+            ...(isAdmin && parsed.affectations
+              ? { affectations: parsed.affectations }
+              : {}),
+            vendeursEnPied: parsed.vendeursEnPied,
           });
         }
       } catch {
@@ -492,7 +703,13 @@ export default function OperationBoard({ slug }: { slug: string }) {
                   type="text"
                   value={data.nomOperation}
                   onChange={(e) =>
-                    updateOperation(slug, { nomOperation: e.target.value })
+                    setCurrentOperation((op) => ({
+                      ...op,
+                      nomOperation: e.target.value,
+                    }))
+                  }
+                  onBlur={(e) =>
+                    persistOperationPatch({ nomOperation: e.target.value })
                   }
                   className="text-base sm:text-lg font-bold text-amber-400 bg-transparent border-b border-transparent hover:border-amber-500/40 focus:border-amber-400 focus:outline-none"
                 />
@@ -512,7 +729,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                   disabled={!isAdmin}
                   onChange={(e) =>
                     isAdmin &&
-                    updateOperation(slug, { dateDebut: e.target.value })
+                    persistOperationPatch({ dateDebut: e.target.value })
                   }
                   className={`bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 ${
                     !isAdmin ? "opacity-75 cursor-not-allowed" : ""
@@ -526,7 +743,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                   disabled={!isAdmin}
                   onChange={(e) =>
                     isAdmin &&
-                    updateOperation(slug, { dateFin: e.target.value })
+                    persistOperationPatch({ dateFin: e.target.value })
                   }
                   className={`bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 ${
                     !isAdmin ? "opacity-75 cursor-not-allowed" : ""
@@ -544,7 +761,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                     disabled={!isAdmin}
                     onChange={(e) =>
                       isAdmin &&
-                      updateOperation(slug, {
+                      persistOperationPatch({
                         coefOperation: parseFloat(e.target.value) || 0,
                       })
                     }
@@ -588,10 +805,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
               <span className="hidden sm:inline">Excel</span>
             </button>
             <button
-              onClick={() => {
-                logout();
-                router.push("/");
-              }}
+              onClick={handleLogout}
               title="Déconnexion"
               className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-red-950/60 border border-slate-700 text-slate-400 hover:text-red-300 transition cursor-pointer"
             >
@@ -767,7 +981,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               <select
                                 value={aff.vendeurId}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     vendeurId: e.target.value,
                                   })
                                 }
@@ -784,14 +998,14 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               <select
                                 value={aff.role}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     role: e.target.value as RoleMission,
                                   })
                                 }
                                 className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-amber-300 font-medium"
                               >
                                 <option value="Vendeur">Vendeur</option>
-                                <option value="Finish">Finisseur</option>
+                                <option value="Finisseur">Finisseur</option>
                               </select>
                             </td>
                             <td className="py-2 pr-2">
@@ -801,7 +1015,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                                 min={data.dateDebut}
                                 max={data.dateFin}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     dateDebut: e.target.value,
                                   })
                                 }
@@ -815,7 +1029,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                                 min={aff.dateDebut}
                                 max={data.dateFin}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     dateFin: e.target.value,
                                   })
                                 }
@@ -830,7 +1044,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                                 type="number"
                                 value={aff.fraisJournalier}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     fraisJournalier:
                                       parseFloat(e.target.value) || 0,
                                   })
@@ -844,7 +1058,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                                 step="0.1"
                                 value={aff.commission}
                                 onChange={(e) =>
-                                  updateAffectation(slug, aff.id, {
+                                  handleUpdateAffectation(aff.id, {
                                     commission: parseFloat(e.target.value) || 0,
                                   })
                                 }
@@ -866,7 +1080,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             <td className="py-2 text-right">
                               <button
                                 type="button"
-                                onClick={() => deleteAffectation(slug, aff.id)}
+                                onClick={() => handleDeleteAffectation(aff.id)}
                                 className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -1101,7 +1315,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                                 min={data.dateDebut}
                                 max={data.dateFin}
                                 onChange={(e) =>
-                                  updateVente(slug, v.id, {
+                                  handleInlineUpdateVente(v.id, {
                                     date: e.target.value,
                                   })
                                 }
@@ -1117,7 +1331,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="text"
                               value={v.numBL}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   numBL: e.target.value,
                                 })
                               }
@@ -1129,7 +1343,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="text"
                               value={v.client}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   client: e.target.value.toUpperCase(),
                                 })
                               }
@@ -1141,7 +1355,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="number"
                               value={v.prixVenteTTC || ""}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   prixVenteTTC:
                                     parseFloat(e.target.value) || 0,
                                 })
@@ -1154,7 +1368,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="number"
                               value={v.acompte || ""}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   acompte: parseFloat(e.target.value) || 0,
                                 })
                               }
@@ -1169,7 +1383,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="number"
                               value={v.prixAchatHT || ""}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   prixAchatHT: parseFloat(e.target.value) || 0,
                                 })
                               }
@@ -1190,7 +1404,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="text"
                               value={v.modele}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   modele: e.target.value.toUpperCase(),
                                 })
                               }
@@ -1201,7 +1415,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             <select
                               value={v.vendeurId}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   vendeurId: e.target.value,
                                 })
                               }
@@ -1219,7 +1433,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             <select
                               value={v.finisseurId}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   finisseurId: e.target.value,
                                 })
                               }
@@ -1237,7 +1451,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             <select
                               value={v.paiement}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   paiement: e.target.value as ModePaiement,
                                 })
                               }
@@ -1255,7 +1469,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="number"
                               value={v.livraisonTTC || ""}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   livraisonTTC:
                                     parseFloat(e.target.value) || 0,
                                 })
@@ -1267,7 +1481,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             <select
                               value={v.creditAccepte}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   creditAccepte: e.target.value as StatutCredit,
                                 })
                               }
@@ -1284,7 +1498,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                               type="text"
                               value={v.observations}
                               onChange={(e) =>
-                                updateVente(slug, v.id, {
+                                handleInlineUpdateVente(v.id, {
                                   observations: e.target.value,
                                 })
                               }
@@ -1311,7 +1525,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             </button>
                             <button
                               type="button"
-                              onClick={() => deleteVente(slug, v.id)}
+                              onClick={() => handleDeleteVente(v.id)}
                               title="Supprimer"
                               className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
                             >
@@ -1387,7 +1601,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              deleteVente(slug, v.id);
+                              handleDeleteVente(v.id);
                             }}
                             aria-label="Supprimer la vente"
                             className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-red-400"

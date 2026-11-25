@@ -5,17 +5,16 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { Lock, User, Eye, EyeOff, ArrowRight, AlertCircle } from "lucide-react";
 import { useAppStore } from "@/lib/store/useAppStore";
+import { loginAction } from "@/lib/actions/auth.action";
+import { getClientFingerprint } from "@/lib/fingerPrintClient";
 
-const ADMIN_CREDENTIALS = {
-  identifiant: "admin@fja-conseils.fr",
-  password: "admin123",
-};
+
 
 export default function LoginForm() {
   const router = useRouter();
-  const operations = useAppStore((s) => s.operations);
   const loginAdmin = useAppStore((s) => s.loginAdmin);
   const loginOperation = useAppStore((s) => s.loginOperation);
+  
 
   const [identifiant, setIdentifiant] = useState("");
   const [password, setPassword] = useState("");
@@ -23,39 +22,35 @@ export default function LoginForm() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setIsLoading(true);
 
-    const cleanId = identifiant.trim().toLowerCase();
+    try {
+      const clientFp = await getClientFingerprint();
+      const result = await loginAction(identifiant, password, clientFp);
 
-    setTimeout(() => {
-      // 1. Connexion Admin
-      if (
-        cleanId === ADMIN_CREDENTIALS.identifiant &&
-        password === ADMIN_CREDENTIALS.password
-      ) {
-        loginAdmin(cleanId);
+      if (!result.success) {
+        setError(result.error);
+        setIsLoading(false);
+        return;
+      }
+
+      if (result.role === "admin") {
+        loginAdmin(result.identifiant);
         router.push("/dashboard");
+        router.refresh();
         return;
       }
 
-      // 2. Connexion Opération spécifique (dynamique depuis le store)
-      const matchedOp = operations.find(
-        (op) =>
-          op.loginId.toLowerCase() === cleanId && op.loginPassword === password
-      );
-
-      if (matchedOp) {
-        loginOperation(cleanId, matchedOp.slug);
-        router.push(`/${matchedOp.slug}`);
-        return;
-      }
-
-      setError("Identifiant ou mot de passe incorrect.");
+      loginOperation(result.identifiant, result.operationSlug);
+      router.push(`/${result.operationSlug}`);
+      router.refresh();
+    } catch {
+      setError("Impossible de joindre le serveur d'authentification.");
       setIsLoading(false);
-    }, 300);
+    }
   };
 
   return (
@@ -103,6 +98,7 @@ export default function LoginForm() {
               id="identifiant"
               type="text"
               required
+              autoComplete="username"
               placeholder="admin@fja-conseils.fr ou code opération"
               value={identifiant}
               onChange={(e) => setIdentifiant(e.target.value)}
@@ -124,6 +120,7 @@ export default function LoginForm() {
               id="password"
               type={showPassword ? "text" : "password"}
               required
+              autoComplete="current-password"
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -152,30 +149,6 @@ export default function LoginForm() {
           {!isLoading && <ArrowRight className="w-4 h-4 text-slate-950" />}
         </button>
       </form>
-
-      {/* Raccourcis de test dev */}
-      <div className="mt-6 pt-4 border-t border-slate-800/80 text-[11px] text-slate-500 flex flex-wrap items-center justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setIdentifiant(ADMIN_CREDENTIALS.identifiant);
-            setPassword(ADMIN_CREDENTIALS.password);
-          }}
-          className="text-amber-400 hover:underline cursor-pointer"
-        >
-          Test Admin
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setIdentifiant("mag-chateau-frejus-1911");
-            setPassword("admin123");
-          }}
-          className="text-slate-400 hover:text-amber-300 hover:underline cursor-pointer"
-        >
-          Test Magasin Fréjus
-        </button>
-      </div>
     </div>
   );
 }

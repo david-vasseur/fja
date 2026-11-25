@@ -17,6 +17,7 @@ import {
   X,
   FileSignature,
   UserPlus,
+  Pencil,
 } from "lucide-react";
 import {
   AffectationVendeur,
@@ -55,6 +56,7 @@ export default function AdminDashboardPage() {
     operations,
     logout,
     addOperation,
+    updateOperation,
     deleteOperation,
   } = useAppStore();
 
@@ -62,7 +64,10 @@ export default function AdminDashboardPage() {
   const [activeTab, setActiveTab] = useState<"operations" | "vendeurs">(
     "operations"
   );
-  const [showNewOpModal, setShowNewOpModal] = useState(false);
+  // null = fermée | "new" = création | OperationData = édition
+  const [modalOperation, setModalOperation] = useState<
+    "new" | OperationData | null
+  >(null);
   const [contractOperation, setContractOperation] =
     useState<OperationData | null>(null);
 
@@ -89,35 +94,86 @@ export default function AdminDashboardPage() {
       affectations: [] as AffectationVendeur[],
     },
     onSubmit: async ({ value }) => {
-      const slug = slugifyOperation(
-        value.magasin,
-        value.ville,
-        value.dateDebut
-      );
       const generatedLogin =
         value.loginId.trim() ||
         `mag-${value.magasin.toLowerCase().replace(/[^a-z0-9]/g, "")}-${value.ville.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
 
-      addOperation({
-        slug,
-        nomOperation: `${value.magasin} ${value.ville}`.trim(),
-        magasin: value.magasin,
-        ville: value.ville,
-        loginId: generatedLogin,
-        loginPassword: value.loginPassword || "admin123",
-        dateDebut: value.dateDebut,
-        dateFin: value.dateFin,
-        coefOperation: Number(value.coefOperation) || 2.5,
-        tva: Number(value.tva) || 1.2,
-        affectations: value.affectations,
-      });
+      if (modalOperation && modalOperation !== "new") {
+        // --- MODE ÉDITION ---
+        updateOperation(modalOperation.slug, {
+          nomOperation: `${value.magasin} ${value.ville}`.trim(),
+          magasin: value.magasin.trim(),
+          ville: value.ville.trim(),
+          loginId: generatedLogin,
+          loginPassword: value.loginPassword || "admin123",
+          dateDebut: value.dateDebut,
+          dateFin: value.dateFin,
+          coefOperation: Number(value.coefOperation) || 2.5,
+          tva: Number(value.tva) || 1.2,
+          affectations: value.affectations,
+        });
+      } else {
+        // --- MODE CRÉATION ---
+        const slug = slugifyOperation(
+          value.magasin,
+          value.ville,
+          value.dateDebut
+        );
+
+        addOperation({
+          slug,
+          nomOperation: `${value.magasin} ${value.ville}`.trim(),
+          magasin: value.magasin.trim(),
+          ville: value.ville.trim(),
+          loginId: generatedLogin,
+          loginPassword: value.loginPassword || "admin123",
+          dateDebut: value.dateDebut,
+          dateFin: value.dateFin,
+          coefOperation: Number(value.coefOperation) || 2.5,
+          tva: Number(value.tva) || 1.2,
+          affectations: value.affectations,
+        });
+      }
 
       operationForm.reset();
-      setShowNewOpModal(false);
+      setModalOperation(null);
     },
   });
 
+  const openCreateModal = () => {
+    operationForm.reset();
+    operationForm.setFieldValue("magasin", "");
+    operationForm.setFieldValue("ville", "");
+    operationForm.setFieldValue("dateDebut", "2026-12-01");
+    operationForm.setFieldValue("dateFin", "2026-12-20");
+    operationForm.setFieldValue("coefOperation", 2.5);
+    operationForm.setFieldValue("tva", 1.2);
+    operationForm.setFieldValue("loginId", "");
+    operationForm.setFieldValue("loginPassword", "");
+    operationForm.setFieldValue("affectations", []);
+    setModalOperation("new");
+  };
+
+  const openEditModal = (op: OperationData) => {
+    operationForm.reset();
+    operationForm.setFieldValue("magasin", op.magasin ?? "");
+    operationForm.setFieldValue("ville", op.ville ?? "");
+    operationForm.setFieldValue("dateDebut", op.dateDebut);
+    operationForm.setFieldValue("dateFin", op.dateFin);
+    operationForm.setFieldValue("coefOperation", op.coefOperation);
+    operationForm.setFieldValue("tva", op.tva);
+    operationForm.setFieldValue("loginId", op.loginId ?? "");
+    operationForm.setFieldValue("loginPassword", op.loginPassword ?? "");
+    operationForm.setFieldValue(
+      "affectations",
+      (op.affectations ?? []).map((a) => ({ ...a }))
+    );
+    setModalOperation(op);
+  };
+
   if (!mounted || auth.role !== "admin") return null;
+
+  const isEditing = modalOperation !== null && modalOperation !== "new";
 
   return (
     <div className="min-h-dvh bg-slate-950 text-slate-100 pb-16">
@@ -191,7 +247,7 @@ export default function AdminDashboardPage() {
 
           {activeTab === "operations" && (
             <button
-              onClick={() => setShowNewOpModal(true)}
+              onClick={openCreateModal}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs sm:text-sm font-bold shadow-lg shadow-amber-500/10 cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -232,19 +288,32 @@ export default function AdminDashboardPage() {
                           {op.nomOperation}
                         </h3>
                       </div>
-                      <button
-                        onClick={() => {
-                          if (
-                            confirm(`Supprimer l'opération ${op.nomOperation} ?`)
-                          ) {
-                            deleteOperation(op.id);
-                          }
-                        }}
-                        className="text-slate-600 hover:text-red-400 p-1 cursor-pointer"
-                        title="Supprimer l'opération"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(op)}
+                          className="text-slate-400 hover:text-amber-400 p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                          title="Modifier l'opération / l'équipe"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Supprimer l'opération ${op.nomOperation} ?`
+                              )
+                            ) {
+                              deleteOperation(op.id);
+                            }
+                          }}
+                          className="text-slate-600 hover:text-red-400 p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                          title="Supprimer l'opération"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2 text-xs text-slate-400">
@@ -325,14 +394,25 @@ export default function AdminDashboardPage() {
 
                   {/* Actions bas de carte */}
                   <div className="mt-5 pt-4 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setContractOperation(op)}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
-                    >
-                      <FileSignature className="w-3.5 h-3.5 text-amber-400" />
-                      <span>Contrats</span>
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(op)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Modifier</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setContractOperation(op)}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium transition cursor-pointer"
+                      >
+                        <FileSignature className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Contrats</span>
+                      </button>
+                    </div>
 
                     <Link
                       href={`/${op.slug}`}
@@ -352,16 +432,33 @@ export default function AdminDashboardPage() {
         {activeTab === "vendeurs" && <VendeurManager />}
       </main>
 
-      {/* MODALE NOUVELLE OPÉRATION + AFFECTATION ÉQUIPE */}
-      {showNewOpModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-          <div className="w-full max-w-3xl bg-slate-900 border border-amber-500/30 rounded-2xl p-5 sm:p-7 shadow-2xl space-y-5 my-auto max-h-[92dvh] overflow-y-auto">
+      {/* MODALE CRÉATION / ÉDITION OPÉRATION + AFFECTATION ÉQUIPE */}
+      {modalOperation !== null && (
+        <div
+          onClick={() => setModalOperation(null)}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-3xl bg-slate-900 border border-amber-500/30 rounded-2xl p-5 sm:p-7 shadow-2xl space-y-5 my-auto max-h-[92dvh] overflow-y-auto"
+          >
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-base font-bold text-amber-400 uppercase tracking-wide">
-                Créer une Opération Commerciale
-              </h2>
+              <div>
+                <h2 className="text-base font-bold text-amber-400 uppercase tracking-wide">
+                  {isEditing
+                    ? `Modifier l'opération : ${modalOperation.nomOperation}`
+                    : "Créer une Opération Commerciale"}
+                </h2>
+                {isEditing && (
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Les ventes déjà enregistrées ({modalOperation.ventes.length}
+                    ) sont conservées.
+                  </p>
+                )}
+              </div>
               <button
-                onClick={() => setShowNewOpModal(false)}
+                type="button"
+                onClick={() => setModalOperation(null)}
                 className="text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -715,7 +812,7 @@ export default function AdminDashboardPage() {
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setShowNewOpModal(false)}
+                  onClick={() => setModalOperation(null)}
                   className="px-4 py-2 rounded-xl border border-slate-700 text-slate-300 text-xs cursor-pointer"
                 >
                   Annuler
@@ -724,7 +821,9 @@ export default function AdminDashboardPage() {
                   type="submit"
                   className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs cursor-pointer"
                 >
-                  Créer l&apos;opération
+                  {isEditing
+                    ? "Enregistrer les modifications"
+                    : "Créer l'opération"}
                 </button>
               </div>
             </form>

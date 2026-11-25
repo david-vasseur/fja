@@ -21,11 +21,14 @@ import {
   UserPlus,
   Store,
   X,
+  Pencil,
+  Check,
 } from "lucide-react";
 import {
   ModePaiement,
   RoleMission,
   StatutCredit,
+  Vente,
   calculerLigne,
   calculerNbJours,
 } from "@/types/operation";
@@ -45,6 +48,8 @@ const fmtPct = (n: number) =>
   })} %`;
 
 const PIED_PREFIX = "pied:";
+
+type VenteFormData = Omit<Vente, "id">;
 
 export default function OperationBoard({ slug }: { slug: string }) {
   const router = useRouter();
@@ -67,6 +72,26 @@ export default function OperationBoard({ slug }: { slug: string }) {
   const [showVendeurs, setShowVendeurs] = useState(true);
   const [nouveauVendeurPied, setNouveauVendeurPied] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- État de la modale Vente (null = fermée, "new" = création, string = id édition) ---
+  const [venteModalMode, setVenteModalMode] = useState<"new" | string | null>(
+    null
+  );
+  const [venteForm, setVenteForm] = useState<VenteFormData>({
+    date: "",
+    numBL: "",
+    client: "",
+    prixVenteTTC: 0,
+    acompte: 0,
+    prixAchatHT: 0,
+    modele: "",
+    vendeurId: "",
+    finisseurId: "",
+    paiement: "COMPTANT",
+    livraisonTTC: 0,
+    creditAccepte: "",
+    observations: "Contremarque",
+  });
 
   useEffect(() => {
     setMounted(true);
@@ -226,6 +251,72 @@ export default function OperationBoard({ slug }: { slug: string }) {
   const affectations = data.affectations ?? [];
   const vendeursEnPied = data.vendeursEnPied ?? [];
 
+  // --- Ouverture / Sauvegarde Modale Vente ---
+  const openNewVenteModal = () => {
+    const defaultVendeur =
+      affectations.find((a) => a.role === "Vendeur")?.vendeurId ?? "";
+    const defaultFinish =
+      affectations.find(
+        (a) => a.role === "Finisseur" || (a.role as string) === "Finisseur"
+      )?.vendeurId ?? "";
+
+    const today = new Date().toISOString().slice(0, 10);
+    const defaultDate =
+      data.dateDebut && today < data.dateDebut
+        ? data.dateDebut
+        : data.dateFin && today > data.dateFin
+          ? data.dateFin
+          : today;
+
+    setVenteForm({
+      date: defaultDate,
+      numBL: "",
+      client: "",
+      prixVenteTTC: 0,
+      acompte: 0,
+      prixAchatHT: 0,
+      modele: "",
+      vendeurId: defaultVendeur,
+      finisseurId: defaultFinish,
+      paiement: "COMPTANT",
+      livraisonTTC: 0,
+      creditAccepte: "",
+      observations: "Contremarque",
+    });
+    setVenteModalMode("new");
+  };
+
+  const openEditVenteModal = (v: Vente) => {
+    const { id, ...rest } = v;
+    setVenteForm({ ...rest });
+    setVenteModalMode(id);
+  };
+
+  const handleSaveVenteModal = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!venteModalMode) return;
+
+    const payload: VenteFormData = {
+      ...venteForm,
+      client: venteForm.client.trim().toUpperCase(),
+      modele: venteForm.modele.trim().toUpperCase(),
+    };
+
+    if (venteModalMode === "new") {
+      addVente(slug, payload);
+    } else {
+      updateVente(slug, venteModalMode, payload);
+    }
+    setVenteModalMode(null);
+  };
+
+  // Aperçu live des calculs dans la modale
+  const previewCalc = calculerLigne(
+    { id: "preview", ...venteForm },
+    data.coefOperation,
+    data.tva
+  );
+
   // --- Gestion des vendeurs en pied (accessible magasin + admin) ---
   const handleAddVendeurPied = (e: React.FormEvent) => {
     e.preventDefault();
@@ -249,31 +340,6 @@ export default function OperationBoard({ slug }: { slug: string }) {
   const handleRemoveVendeurPied = (nom: string) => {
     updateOperation(slug, {
       vendeursEnPied: vendeursEnPied.filter((v) => v !== nom),
-    });
-  };
-
-  const handleAddVente = () => {
-    const defaultVendeur =
-      affectations.find((a) => a.role === "Vendeur")?.vendeurId ?? "";
-    const defaultFinish =
-      affectations.find(
-        (a) => a.role === "Finisseur" || (a.role as string) === "Finisseur"
-      )?.vendeurId ?? "";
-
-    addVente(slug, {
-      date: data.dateDebut || new Date().toISOString().slice(0, 10),
-      numBL: "",
-      client: "",
-      prixVenteTTC: 0,
-      acompte: 0,
-      prixAchatHT: 0,
-      modele: "",
-      vendeurId: defaultVendeur,
-      finisseurId: defaultFinish,
-      paiement: "COMPTANT",
-      livraisonTTC: 0,
-      creditAccepte: "",
-      observations: "Contremarque",
     });
   };
 
@@ -418,8 +484,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
                 fill
                 sizes="48px"
                 className="object-cover"
-                />
-
+              />
             </div>
             <div>
               {isAdmin ? (
@@ -970,7 +1035,7 @@ export default function OperationBoard({ slug }: { slug: string }) {
               </h2>
             </div>
             <button
-              onClick={handleAddVente}
+              onClick={openNewVenteModal}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-bold shadow cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -978,498 +1043,770 @@ export default function OperationBoard({ slug }: { slug: string }) {
             </button>
           </div>
 
-          {/* VUE DESKTOP */}
-          <div className="hidden xl:block overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase">
-                <tr>
-                  <th className="py-2.5 px-2.5">Date</th>
-                  <th className="py-2.5 px-2">BL</th>
-                  <th className="py-2.5 px-2.5">Client</th>
-                  <th className="py-2.5 px-2">Vente TTC</th>
-                  <th className="py-2.5 px-2">Acompte</th>
-                  <th className="py-2.5 px-2 text-right">% Ac.</th>
-                  <th className="py-2.5 px-2">Achat HT</th>
-                  <th className="py-2.5 px-2 text-right">Coef</th>
-                  <th className="py-2.5 px-2">Modèle</th>
-                  <th className="py-2.5 px-2">Vendeur</th>
-                  <th className="py-2.5 px-2">Finisseur</th>
-                  <th className="py-2.5 px-2">Paiement</th>
-                  <th className="py-2.5 px-2">Livraison</th>
-                  <th className="py-2.5 px-2">Crédit</th>
-                  <th className="py-2.5 px-2">Observations</th>
-                  <th className="py-2.5 px-2 text-right text-amber-400">
-                    Écart Op
-                  </th>
-                  <th className="py-2.5 px-2"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/70">
+          {data.ventes.length === 0 ? (
+            <div className="p-10 text-center text-sm text-slate-400">
+              Aucune vente enregistrée pour le moment. Cliquez sur{" "}
+              <strong className="text-amber-400">Ajouter une vente</strong> pour
+              saisir le premier bon de commande.
+            </div>
+          ) : (
+            <>
+              {/* VUE DESKTOP */}
+              <div className="hidden xl:block overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 uppercase">
+                    <tr>
+                      <th className="py-2.5 px-2.5">Date</th>
+                      <th className="py-2.5 px-2">BL</th>
+                      <th className="py-2.5 px-2.5">Client</th>
+                      <th className="py-2.5 px-2">Vente TTC</th>
+                      <th className="py-2.5 px-2">Acompte</th>
+                      <th className="py-2.5 px-2 text-right">% Ac.</th>
+                      <th className="py-2.5 px-2">Achat HT</th>
+                      <th className="py-2.5 px-2 text-right">Coef</th>
+                      <th className="py-2.5 px-2">Modèle</th>
+                      <th className="py-2.5 px-2">Vendeur</th>
+                      <th className="py-2.5 px-2">Finisseur</th>
+                      <th className="py-2.5 px-2">Paiement</th>
+                      <th className="py-2.5 px-2">Livraison</th>
+                      <th className="py-2.5 px-2">Crédit</th>
+                      <th className="py-2.5 px-2">Observations</th>
+                      <th className="py-2.5 px-2 text-right text-amber-400">
+                        Écart Op
+                      </th>
+                      <th className="py-2.5 px-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/70">
+                    {data.ventes.map((v) => {
+                      const c = calculerLigne(v, data.coefOperation, data.tva);
+                      const horsPeriode =
+                        (data.dateDebut && v.date < data.dateDebut) ||
+                        (data.dateFin && v.date > data.dateFin);
+
+                      return (
+                        <tr
+                          key={v.id}
+                          className={
+                            horsPeriode
+                              ? "bg-red-950/30"
+                              : "hover:bg-slate-800/40 transition"
+                          }
+                        >
+                          <td className="py-2 px-2">
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="date"
+                                value={v.date}
+                                min={data.dateDebut}
+                                max={data.dateFin}
+                                onChange={(e) =>
+                                  updateVente(slug, v.id, {
+                                    date: e.target.value,
+                                  })
+                                }
+                                className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200 w-28"
+                              />
+                              {horsPeriode && (
+                                <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="text"
+                              value={v.numBL}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  numBL: e.target.value,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-14 text-slate-200"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="text"
+                              value={v.client}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  client: e.target.value.toUpperCase(),
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 w-28 font-semibold text-white"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="number"
+                              value={v.prixVenteTTC || ""}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  prixVenteTTC:
+                                    parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-amber-300 font-semibold"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="number"
+                              value={v.acompte || ""}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  acompte: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-slate-200"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5 text-right text-slate-400">
+                            {c.pctAcompte.toFixed(1)}%
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="number"
+                              value={v.prixAchatHT || ""}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  prixAchatHT: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-slate-200"
+                            />
+                          </td>
+                          <td
+                            className={`py-2 px-1.5 text-right font-bold ${
+                              c.coef >= data.coefOperation
+                                ? "text-emerald-400"
+                                : "text-amber-400"
+                            }`}
+                          >
+                            {c.coef.toFixed(2)}
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="text"
+                              value={v.modele}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  modele: e.target.value.toUpperCase(),
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-24 text-slate-200"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <select
+                              value={v.vendeurId}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  vendeurId: e.target.value,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
+                            >
+                              <option value="">-</option>
+                              {optionsIntervenants.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <select
+                              value={v.finisseurId}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  finisseurId: e.target.value,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
+                            >
+                              <option value="">-</option>
+                              {optionsIntervenants.map((opt) => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <select
+                              value={v.paiement}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  paiement: e.target.value as ModePaiement,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
+                            >
+                              <option value="COMPTANT">COMPTANT</option>
+                              <option value="CREDIT">CREDIT</option>
+                              <option value="CB">CB</option>
+                              <option value="CHEQUE">CHEQUE</option>
+                              <option value="VIREMENT">VIREMENT</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="number"
+                              value={v.livraisonTTC || ""}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  livraisonTTC:
+                                    parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-16 text-slate-200"
+                            />
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <select
+                              value={v.creditAccepte}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  creditAccepte: e.target.value as StatutCredit,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
+                            >
+                              <option value="">-</option>
+                              <option value="Oui">Oui</option>
+                              <option value="Non">Non</option>
+                              <option value="En cours">En cours</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-1.5">
+                            <input
+                              type="text"
+                              value={v.observations}
+                              onChange={(e) =>
+                                updateVente(slug, v.id, {
+                                  observations: e.target.value,
+                                })
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-28 text-slate-300"
+                            />
+                          </td>
+                          <td
+                            className={`py-2 px-2 text-right font-bold ${
+                              c.ecartCoefOp >= 0
+                                ? "text-emerald-400"
+                                : "text-red-400"
+                            }`}
+                          >
+                            {c.ecartCoefOp.toFixed(1)}
+                          </td>
+                          <td className="py-2 px-1.5 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => openEditVenteModal(v)}
+                              title="Modifier dans le formulaire"
+                              className="text-slate-400 hover:text-amber-400 p-1 cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteVente(slug, v.id)}
+                              title="Supprimer"
+                              className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* VUE MOBILE & TABLETTE : CARTES COMPACTES -> MODALE AU CLIC */}
+              <div className="xl:hidden divide-y divide-slate-800">
                 {data.ventes.map((v) => {
                   const c = calculerLigne(v, data.coefOperation, data.tva);
                   const horsPeriode =
                     (data.dateDebut && v.date < data.dateDebut) ||
                     (data.dateFin && v.date > data.dateFin);
+                  const nomVendeur = resolveNomIntervenant(v.vendeurId);
+                  const nomFinisseur = resolveNomIntervenant(v.finisseurId);
 
                   return (
-                    <tr
+                    <div
                       key={v.id}
-                      className={
-                        horsPeriode
-                          ? "bg-red-950/30"
-                          : "hover:bg-slate-800/40 transition"
-                      }
+                      onClick={() => openEditVenteModal(v)}
+                      className={`p-4 space-y-2.5 active:bg-slate-800/70 transition cursor-pointer ${
+                        horsPeriode ? "bg-red-950/25" : ""
+                      }`}
                     >
-                      <td className="py-2 px-2">
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="date"
-                            value={v.date}
-                            min={data.dateDebut}
-                            max={data.dateFin}
-                            onChange={(e) =>
-                              updateVente(slug, v.id, { date: e.target.value })
-                            }
-                            className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200 w-28"
-                          />
-                          {horsPeriode && (
-                            <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                          )}
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 text-xs font-bold">
+                              BL #{v.numBL || "—"}
+                            </span>
+                            <span className="font-bold text-white text-sm">
+                              {v.client || "CLIENT SANS NOM"}
+                            </span>
+                            {horsPeriode && (
+                              <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1">
+                            {v.date} • {v.modele || "Modèle non précisé"} •{" "}
+                            <span className="text-slate-300">{v.paiement}</span>
+                          </p>
                         </div>
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="text"
-                          value={v.numBL}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, { numBL: e.target.value })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-14 text-slate-200"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="text"
-                          value={v.client}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              client: e.target.value.toUpperCase(),
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-2 py-1 w-28 font-semibold text-white"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="number"
-                          value={v.prixVenteTTC || ""}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              prixVenteTTC: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-amber-300 font-semibold"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="number"
-                          value={v.acompte || ""}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              acompte: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-slate-200"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5 text-right text-slate-400">
-                        {c.pctAcompte.toFixed(1)}%
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="number"
-                          value={v.prixAchatHT || ""}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              prixAchatHT: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-20 text-slate-200"
-                        />
-                      </td>
-                      <td
-                        className={`py-2 px-1.5 text-right font-bold ${
-                          c.coef >= data.coefOperation
-                            ? "text-emerald-400"
-                            : "text-amber-400"
-                        }`}
-                      >
-                        {c.coef.toFixed(2)}
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="text"
-                          value={v.modele}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              modele: e.target.value.toUpperCase(),
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-24 text-slate-200"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <select
-                          value={v.vendeurId}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              vendeurId: e.target.value,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
-                        >
-                          <option value="">-</option>
-                          {optionsIntervenants.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <select
-                          value={v.finisseurId}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              finisseurId: e.target.value,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
-                        >
-                          <option value="">-</option>
-                          {optionsIntervenants.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <select
-                          value={v.paiement}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              paiement: e.target.value as ModePaiement,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
-                        >
-                          <option value="COMPTANT">COMPTANT</option>
-                          <option value="CREDIT">CREDIT</option>
-                          <option value="CB">CB</option>
-                          <option value="CHEQUE">CHEQUE</option>
-                          <option value="VIREMENT">VIREMENT</option>
-                        </select>
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="number"
-                          value={v.livraisonTTC || ""}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              livraisonTTC: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-16 text-slate-200"
-                        />
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <select
-                          value={v.creditAccepte}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              creditAccepte: e.target.value as StatutCredit,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-slate-200"
-                        >
-                          <option value="">-</option>
-                          <option value="Oui">Oui</option>
-                          <option value="Non">Non</option>
-                          <option value="En cours">En cours</option>
-                        </select>
-                      </td>
-                      <td className="py-2 px-1.5">
-                        <input
-                          type="text"
-                          value={v.observations}
-                          onChange={(e) =>
-                            updateVente(slug, v.id, {
-                              observations: e.target.value,
-                            })
-                          }
-                          className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 w-28 text-slate-300"
-                        />
-                      </td>
-                      <td
-                        className={`py-2 px-2 text-right font-bold ${
-                          c.ecartCoefOp >= 0
-                            ? "text-emerald-400"
-                            : "text-red-400"
-                        }`}
-                      >
-                        {c.ecartCoefOp.toFixed(1)}
-                      </td>
-                      <td className="py-2 px-1.5 text-right">
-                        <button
-                          onClick={() => deleteVente(slug, v.id)}
-                          className="text-slate-500 hover:text-red-400 p-1 cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
 
-          {/* VUE MOBILE & TABLETTE */}
-          <div className="xl:hidden divide-y divide-slate-800">
-            {data.ventes.map((v) => {
-              const c = calculerLigne(v, data.coefOperation, data.tva);
-              return (
-                <div key={v.id} className="p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 text-xs font-bold">
-                        BL #{v.numBL || "—"}
-                      </span>
-                      <input
-                        type="text"
-                        placeholder="NOM CLIENT"
-                        value={v.client}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            client: e.target.value.toUpperCase(),
-                          })
-                        }
-                        className="bg-transparent font-bold text-white text-sm border-b border-slate-700 focus:border-amber-400 focus:outline-none w-36"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs font-bold px-2 py-0.5 rounded ${
-                          c.coef >= data.coefOperation
-                            ? "bg-emerald-950 text-emerald-400 border border-emerald-500/30"
-                            : "bg-amber-950 text-amber-400 border border-amber-500/30"
-                        }`}
-                      >
-                        Coef {c.coef.toFixed(2)}
-                      </span>
-                      <button
-                        onClick={() => deleteVente(slug, v.id)}
-                        className="text-slate-500 hover:text-red-400 p-1"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span
+                            className={`text-xs font-bold px-2 py-0.5 rounded ${
+                              c.coef >= data.coefOperation
+                                ? "bg-emerald-950 text-emerald-400 border border-emerald-500/30"
+                                : "bg-amber-950 text-amber-400 border border-amber-500/30"
+                            }`}
+                          >
+                            Coef {c.coef.toFixed(2)}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditVenteModal(v);
+                            }}
+                            aria-label="Modifier la vente"
+                            className="p-1.5 rounded-lg bg-slate-800 text-amber-400"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteVente(slug, v.id);
+                            }}
+                            aria-label="Supprimer la vente"
+                            className="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-red-400"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">Date</label>
-                      <input
-                        type="date"
-                        value={v.date}
-                        min={data.dateDebut}
-                        max={data.dateFin}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, { date: e.target.value })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        N° BL
-                      </label>
-                      <input
-                        type="text"
-                        value={v.numBL}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, { numBL: e.target.value })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Modèle
-                      </label>
-                      <input
-                        type="text"
-                        value={v.modele}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            modele: e.target.value.toUpperCase(),
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Paiement
-                      </label>
-                      <select
-                        value={v.paiement}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            paiement: e.target.value as ModePaiement,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      >
-                        <option value="COMPTANT">COMPTANT</option>
-                        <option value="CREDIT">CREDIT</option>
-                        <option value="CB">CB</option>
-                        <option value="CHEQUE">CHEQUE</option>
-                        <option value="VIREMENT">VIREMENT</option>
-                      </select>
-                    </div>
-                  </div>
+                      <div className="grid grid-cols-3 gap-2 pt-1 text-xs bg-slate-950/60 border border-slate-800/80 rounded-xl p-2.5">
+                        <div>
+                          <span className="text-slate-400 block">Vente TTC</span>
+                          <strong className="text-amber-300 text-sm">
+                            {fmtEur(v.prixVenteTTC)}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block">
+                            Acompte ({c.pctAcompte.toFixed(0)}%)
+                          </span>
+                          <strong className="text-slate-200">
+                            {fmtEur(v.acompte)}
+                          </strong>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-slate-400 block">Écart Op</span>
+                          <strong
+                            className={
+                              c.ecartCoefOp >= 0
+                                ? "text-emerald-400"
+                                : "text-red-400"
+                            }
+                          >
+                            {c.ecartCoefOp >= 0 ? "+" : ""}
+                            {fmtEur(c.ecartCoefOp)}
+                          </strong>
+                        </div>
+                      </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div>
-                      <label className="text-amber-400/90 block mb-0.5">
-                        Vente TTC (€)
-                      </label>
-                      <input
-                        type="number"
-                        value={v.prixVenteTTC || ""}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            prixVenteTTC: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-amber-500/40 rounded px-2 py-1.5 text-amber-300 font-bold"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Acompte ({c.pctAcompte.toFixed(0)}%)
-                      </label>
-                      <input
-                        type="number"
-                        value={v.acompte || ""}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            acompte: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Achat HT (€)
-                      </label>
-                      <input
-                        type="number"
-                        value={v.prixAchatHT || ""}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            prixAchatHT: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Livraison (€)
-                      </label>
-                      <input
-                        type="number"
-                        value={v.livraisonTTC || ""}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            livraisonTTC: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2 text-xs pt-1">
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Vendeur
-                      </label>
-                      <select
-                        value={v.vendeurId}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            vendeurId: e.target.value,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      >
-                        <option value="">-</option>
-                        {optionsIntervenants.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Finisseur
-                      </label>
-                      <select
-                        value={v.finisseurId}
-                        onChange={(e) =>
-                          updateVente(slug, v.id, {
-                            finisseurId: e.target.value,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-slate-200"
-                      >
-                        <option value="">-</option>
-                        {optionsIntervenants.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-slate-400 block mb-0.5">
-                        Écart Coef Op
-                      </label>
-                      <div
-                        className={`w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 font-bold text-right ${
-                          c.ecartCoefOp >= 0
-                            ? "text-emerald-400"
-                            : "text-red-400"
-                        }`}
-                      >
-                        {c.ecartCoefOp >= 0 ? "+" : ""}
-                        {c.ecartCoefOp.toFixed(1)} €
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                        <span>
+                          Vendeur :{" "}
+                          <strong className="text-slate-200">
+                            {nomVendeur || "—"}
+                          </strong>{" "}
+                          | Finisseur :{" "}
+                          <strong className="text-slate-200">
+                            {nomFinisseur || "—"}
+                          </strong>
+                        </span>
+                        {v.livraisonTTC > 0 && (
+                          <span>Liv. {fmtEur(v.livraisonTTC)}</span>
+                        )}
                       </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </section>
       </main>
+
+      {/* ============================================================ */}
+      {/* MODALE AJOUT / MODIFICATION D'UNE VENTE                      */}
+      {/* ============================================================ */}
+      {venteModalMode !== null && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setVenteModalMode(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-2xl bg-slate-900 border border-amber-500/30 rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92dvh] flex flex-col overflow-hidden"
+          >
+            {/* Header modale */}
+            <div className="px-5 py-4 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-amber-400">
+                  {venteModalMode === "new"
+                    ? "Nouvelle vente"
+                    : `Modifier la vente ${venteForm.numBL ? `#${venteForm.numBL}` : ""}`}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Objectif Coef Op :{" "}
+                  <strong className="text-amber-300">
+                    {data.coefOperation}
+                  </strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVenteModalMode(null)}
+                className="p-2 rounded-lg bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Corps formulaire */}
+            <form
+              onSubmit={handleSaveVenteModal}
+              className="p-5 overflow-y-auto space-y-4 text-xs"
+            >
+              {/* Aperçu live des indicateurs calculés */}
+              <div className="grid grid-cols-3 gap-2 bg-slate-950 border border-slate-800 rounded-xl p-3">
+                <div>
+                  <span className="text-slate-400 block">Coef calculé</span>
+                  <span
+                    className={`text-base font-bold ${
+                      previewCalc.coef >= data.coefOperation
+                        ? "text-emerald-400"
+                        : "text-amber-400"
+                    }`}
+                  >
+                    {previewCalc.coef.toFixed(2)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block">% Acompte</span>
+                  <span className="text-base font-bold text-slate-200">
+                    {previewCalc.pctAcompte.toFixed(1)} %
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-slate-400 block">Écart Coef Op</span>
+                  <span
+                    className={`text-base font-bold ${
+                      previewCalc.ecartCoefOp >= 0
+                        ? "text-emerald-400"
+                        : "text-red-400"
+                    }`}
+                  >
+                    {previewCalc.ecartCoefOp >= 0 ? "+" : ""}
+                    {fmtEur(previewCalc.ecartCoefOp)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Ligne 1 : Date, N° BL, Client */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Date de vente *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={venteForm.date}
+                    min={data.dateDebut}
+                    max={data.dateFin}
+                    onChange={(e) =>
+                      setVenteForm({ ...venteForm, date: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    N° BL
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: 1042"
+                    value={venteForm.numBL}
+                    onChange={(e) =>
+                      setVenteForm({ ...venteForm, numBL: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Nom Client *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="DUPONT"
+                    value={venteForm.client}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        client: e.target.value.toUpperCase(),
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-semibold"
+                  />
+                </div>
+              </div>
+
+              {/* Ligne 2 : Montants */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div>
+                  <label className="text-amber-400 font-medium block mb-1">
+                    Prix Vente TTC (€) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    placeholder="0"
+                    value={venteForm.prixVenteTTC || ""}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        prixVenteTTC: parseFloat(e.target.value) || 0,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-amber-300 font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Acompte (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0"
+                    value={venteForm.acompte || ""}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        acompte: parseFloat(e.target.value) || 0,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Prix Achat HT (€) *
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    placeholder="0"
+                    value={venteForm.prixAchatHT || ""}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        prixAchatHT: parseFloat(e.target.value) || 0,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Livraison TTC (€)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0"
+                    value={venteForm.livraisonTTC || ""}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        livraisonTTC: parseFloat(e.target.value) || 0,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {/* Ligne 3 : Modèle, Vendeur, Finisseur */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Modèle
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: MILANO"
+                    value={venteForm.modele}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        modele: e.target.value.toUpperCase(),
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Vendeur
+                  </label>
+                  <select
+                    value={venteForm.vendeurId}
+                    onChange={(e) =>
+                      setVenteForm({ ...venteForm, vendeurId: e.target.value })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  >
+                    <option value="">— Aucun —</option>
+                    {optionsIntervenants.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label} ({opt.badge})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Finisseur
+                  </label>
+                  <select
+                    value={venteForm.finisseurId}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        finisseurId: e.target.value,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  >
+                    <option value="">— Aucun —</option>
+                    {optionsIntervenants.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label} ({opt.badge})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Ligne 4 : Paiement, Crédit, Observations */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Mode de paiement
+                  </label>
+                  <select
+                    value={venteForm.paiement}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        paiement: e.target.value as ModePaiement,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  >
+                    <option value="COMPTANT">COMPTANT</option>
+                    <option value="CREDIT">CREDIT</option>
+                    <option value="CB">CB</option>
+                    <option value="CHEQUE">CHEQUE</option>
+                    <option value="VIREMENT">VIREMENT</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Crédit accepté
+                  </label>
+                  <select
+                    value={venteForm.creditAccepte}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        creditAccepte: e.target.value as StatutCredit,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  >
+                    <option value="">—</option>
+                    <option value="Oui">Oui</option>
+                    <option value="Non">Non</option>
+                    <option value="En cours">En cours</option>
+                  </select>
+                </div>
+                <div className="col-span-2 sm:col-span-1">
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Observations
+                  </label>
+                  <input
+                    type="text"
+                    value={venteForm.observations}
+                    onChange={(e) =>
+                      setVenteForm({
+                        ...venteForm,
+                        observations: e.target.value,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {/* Footer modale */}
+              <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setVenteModalMode(null)}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  {venteModalMode === "new"
+                    ? "Enregistrer la vente"
+                    : "Mettre à jour"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

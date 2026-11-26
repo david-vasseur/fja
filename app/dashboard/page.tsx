@@ -40,6 +40,7 @@ import {
   getOperationsAction,
   updateOperationAction,
 } from "@/lib/actions/operations.action";
+import { PushNotificationButton } from "@/components/PushNotificationButton";
 
 const fmtEur = (n: number) =>
   new Intl.NumberFormat("fr-FR", {
@@ -333,6 +334,7 @@ export default function AdminDashboardPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <PushNotificationButton />
             <span className="hidden sm:inline text-xs text-slate-400 mr-2">
               {auth.email}
             </span>
@@ -346,6 +348,7 @@ export default function AdminDashboardPage() {
           </div>
         </div>
       </header>
+
 
       <main className="max-w-7xl mx-auto px-4 pt-6 space-y-6">
         {/* NAVIGATION ONGLETS */}

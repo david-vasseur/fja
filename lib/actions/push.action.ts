@@ -1,32 +1,34 @@
 "use server";
 
 import { cookies } from "next/headers";
+import { backendFetch, SESSION_COOKIE } from "@/lib/backend";
 
 export async function savePushSubscriptionAction(
   subscription: PushSubscriptionJSON,
-  fingerprint: string
+  clientFp: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const cookieStore = await cookies();
-    const sessionToken = cookieStore.get("fja_session")?.value; // Adapte au nom exact de ton cookie de session
-
-    const res = await fetch(`${process.env.BACKEND_URL}/push/subscribe`, {
+    await backendFetch("/push/subscribe", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-internal-api-key": process.env.INTERNAL_API_KEY!,
-        "x-fingerprint": fingerprint,
-        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-      },
       body: JSON.stringify({ subscription }),
+      clientFp,
     });
-
-    if (!res.ok) {
-      return { success: false, error: "Erreur lors de l'enregistrement push" };
-    }
-
     return { success: true };
-  } catch {
-    return { success: false, error: "Impossible de joindre le serveur" };
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    if (status === 401 || status === 403) {
+      (await cookies()).delete(SESSION_COOKIE);
+      return {
+        success: false,
+        error: "Session expirée ou empreinte invalide.",
+      };
+    }
+    return {
+      success: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : "Erreur lors de l'enregistrement push.",
+    };
   }
 }

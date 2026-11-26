@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "FJA Conseils — Suivi Opérations",
     short_name: "FJA Conseils",
     description: "Tableau de bord commercial et suivi des ventes FJA Conseils",
-    start_url: "/",
+    start_url: "/?pwa=1",
     display: "standalone",
     background_color: "#020617",
     theme_color: "#f59e0b",

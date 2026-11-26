@@ -1,11 +1,21 @@
 "use client";
 
 export async function getClientFingerprint(): Promise<string> {
+  const isTouchDevice =
+    typeof navigator !== "undefined" && navigator.maxTouchPoints > 0;
+
+  // Sur mobile/tablette, screen.width/height reste insensible au zoom iOS et au clavier virtuel
+  const dimensions = isTouchDevice
+    ? [
+        Math.min(window.screen.width, window.screen.height),
+        Math.max(window.screen.width, window.screen.height),
+      ]
+    : [window.innerWidth, window.innerHeight];
+
   const raw = [
     navigator.userAgent,
     navigator.language,
-    window.innerWidth,
-    window.innerHeight,
+    ...dimensions,
     window.devicePixelRatio || 1,
     Intl.DateTimeFormat().resolvedOptions().timeZone,
     navigator.hardwareConcurrency || "",

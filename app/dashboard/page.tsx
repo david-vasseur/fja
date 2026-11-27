@@ -41,6 +41,7 @@ import {
   updateOperationAction,
 } from "@/lib/actions/operations.action";
 import { PushNotificationButton } from "@/components/PushNotificationButton";
+import { OperationCredentialsCard } from "@/components/OperationCredentialsCard";
 
 const fmtEur = (n: number) =>
   new Intl.NumberFormat("fr-FR", {
@@ -498,7 +499,7 @@ export default function AdminDashboardPage() {
                     </div>
 
                     {/* Identifiants accès magasin */}
-                    <div className="bg-slate-950/50 border border-slate-800/70 rounded-xl p-2.5 text-[11px] space-y-1">
+                    {/* <div className="bg-slate-950/50 border border-slate-800/70 rounded-xl p-2.5 text-[11px] space-y-1">
                       <div className="flex items-center justify-between text-slate-400">
                         <span className="inline-flex items-center gap-1">
                           <KeyRound className="w-3 h-3 text-amber-500/70" />
@@ -514,7 +515,13 @@ export default function AdminDashboardPage() {
                           {op.loginPassword}
                         </code>
                       </div>
-                    </div>
+                    </div> */}
+                    <OperationCredentialsCard
+                      loginId={op.loginId}
+                      loginPassword={op.loginPassword}
+                      // operationName={op.nom} // optionnel : adapte au champ de ton opération (ex. op.magasin ou op.titre)
+                    />
+
                   </div>
 
                   {/* Actions bas de carte */}
